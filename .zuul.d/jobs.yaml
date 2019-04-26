@@ -1,0 +1,351 @@
+- job:
+    name: networking-odl-config-job
+    description: Fake job to hold configuration settings for jobs
+    vars:
+      odl_version_map:
+        carbon: &carbon carbon-latest
+        nitrogen: &nitrogen nitrogen-latest
+        oxygen: &oxygen oxygen-snapshot-0.8
+      common_devstack_vars: &devstack_vars
+        devstack_localrc:
+          ODL_TIMEOUT: 60
+          ODL_RELEASE: latest-snapshot
+          # Set here which ODL openstack service provider to use
+          ODL_NETVIRT_KARAF_FEATURE: odl-neutron-service,odl-restconf-all,odl-aaa-authn,odl-dlux-core,odl-mdsal-apidocs,odl-netvirt-openstack,odl-neutron-logger,odl-neutron-hostconfig-ovs
+          # Switch to using the ODL's L3 implementation
+          ODL_L3: True
+          # Switch to V2 Driver
+          ODL_V2DRIVER: True
+          # public network connectivity
+          ODL_PROVIDER_MAPPINGS: public:br-ex
+          PUBLIC_PHYSICAL_NETWORK: public
+          PUBLIC_BRIDGE: br-ex
+          Q_USE_PUBLIC_VETH: False
+          # Enable debug logs for odl ovsdb
+          ODL_NETVIRT_DEBUG_LOGS: True
+          # Database
+          MYSQL_PASSWORD: secretmysql
+          DATABASE_QUERY_LOGGING: True
+          OS_LOG_PATH: '{{ zuul.executor.log_root }}'
+          IS_GATE: True
+        devstack_services: &devstack_services
+          c-api: True
+          c-bak: True
+          c-sch: True
+          c-vol: True
+          cinder: True
+          dstat: True
+          g-api: True
+          g-reg: True
+          horizon: False
+          key: True
+          mysql: True
+          n-api-meta: True
+          n-api: True
+          n-cauth: False
+          n-cond: True
+          n-cpu: True
+          n-crt: True
+          n-novnc: False
+          n-obj: True
+          n-sch: True
+          neutron: True
+          neutron-agent: False
+          neutron-api: True
+          neutron-dhcp: True
+          neutron-l3: False
+          neutron-metadata-agent: True
+          neutron-qos: True
+          placement-api: True
+          placement-client: False
+          q-agt: False
+          q-dhcp: False
+          q-l3: False
+          q-meta: False
+          q-svc: False
+          rabbit: True
+        devstack_plugins: &devstack_plugins
+          networking-odl: https://opendev.org/openstack/networking-odl
+          neutron: https://opendev.org/openstack/neutron
+
+- job:
+    name: networking-odl-tempest-base
+    parent: devstack-tempest
+    description: |
+        Base job for tempest-based tests
+    pre-run: playbooks/tempest/pre.yaml
+    run: playbooks/tempest/run.yaml
+    post-run: playbooks/tempest/post.yaml
+    voting: false
+    required-projects:
+      - openstack/ceilometer
+      - openstack/networking-odl
+      - openstack/networking-l2gw
+      - openstack/networking-sfc
+      - openstack/networking-bgpvpn
+      - openstack/neutron-fwaas
+      - openstack/neutron-lbaas
+      - openstack/neutron-tempest-plugin
+    roles:
+      - zuul: openstack/devstack
+    timeout: 9000
+    irrelevant-files: &irrelevant_files
+      - ^.*\.rst$
+      - ^doc/.*$
+      - ^releasenotes/.*$
+    vars:
+      <<: *devstack_vars
+      tox_envlist: all-plugin
+      zuul_copy_output:
+        '{{ devstack_log_dir }}/screen-karaf.log': 'logs'
+      extensions_to_txt:
+        log: True
+      devstack_plugins:
+        <<: *devstack_plugins
+        neutron-tempest-plugin: https://opendev.org/openstack/neutron-tempest-plugin.git
+      tempest_test_regex: |
+        (?x)      # Ignore comments and whitespaces
+        # \\\\ BEGIN LIST OF EXCLUSIONS
+        ^(?!.*
+        # exclude the slow tag (part of the default for 'full')
+        (?:.*\[.*\bslow\b.*\])
+        # ____ BEGIN: EXCLUDE THINGS THAT JUST AREN'T ENABLED
+        |(?:tempest\.api\.network\.admin\.test_quotas\.QuotasTest\.test_lbaas_quotas.*)
+        |(?:tempest\.api\.network\.test_load_balancer.*)
+        |(?:tempest\.scenario\.test_load_balancer.*)
+        |(?:tempest\.api\.network\.admin\.test_load_balancer.*)
+        |(?:tempest\.api\.network\.admin\.test_lbaas.*)
+        |(?:tempest\.api\.network\.test_fwaas_extensions.*)
+        |(?:tempest\.api\.network\.test_vpnaas_extensions.*)
+        |(?:tempest\.api\.network\.test_metering_extensions.*)
+        |(?:tempest\.thirdparty\.boto\.test_s3.*)
+        # ^^^^ END: EXCLUDE THINGS THAT JUST AREN'T ENABLED
+        # ____ BEGIN: EXCLUDE STUFF LESS RELATED TO NETWORKING, TO REDUCE GATE LOAD
+        |(?:tempest\.api\.object.*)
+        |(?:tempest\.api\.compute\.admin.*)
+        |(?:tempest\.api\.compute\.images.*)
+        |(?:tempest\.api\.compute\.volumes.*)
+        # ^^^^ END: EXCLUDE STUFF LESS RELATED TO NETWORKING, TO REDUCE GATE LOAD
+        # ____ BEGIN: EXCLUDE STUFF WE'RE LESS LIKELY TO BREAK
+        |(?:tempest\.api\.identity.*)
+        |(?:tempest\.api\.image.*)
+        |(?:tempest\.api\.volume.*)
+        # ^^^^ END: EXCLUDE STUFF WE'RE LESS LIKELY TO BREAK
+        # ____ BEGIN: UNSUPPORTED FEATURES
+        # ODL legacy netvirt doesn't support ipv6
+        |(?:tempest\.scenario\.test_network_v6\.TestGettingAddress.*)
+        # ^^^^ END: UNSUPPORTED FEATURES
+        # ____ BEGIN: EXCLUSION OF NEUTRON'S TEMPEST PLUGIN
+        # DNS domain isn't supported
+        |(?:neutron_tempest_plugin.*dns_domain.*?)
+        # DNS name for port doesn't seem to be supported
+        |(?:neutron_tempest_plugin\.api\.test_ports\.PortsTestJSON.*dns_name.*?)
+        # Reporting router interface status isn't supported
+        |(?:neutron_tempest_plugin.*test_router_interface_status.*?)
+        # DVR is not interesting in the context of ODL
+        |(?:neutron_tempest_plugin\..*[dD]vr.*?)
+        # ^^^^ END: EXCLUSION OF NEUTRON'S TEMPEST PLUGIN
+        # ____ BEGIN: CURRENT LIST OF FAILING TESTS THAT NEED TO BE TRIAGED, HAVE BUGS FILED, AND
+        #             FIXED AS APPROPRIATE.
+        # TODO(yamahata): fix bugs and remove those tests from here
+        # BUG: https://bugs.launchpad.net/networking-odl/+bug/1642158
+        # legacy netvirt ignores admin-state-up state for network/port
+        |(?:tempest\.scenario\.test_network_basic_ops\.TestNetworkBasicOps\.test_update_instance_port_admin_state.*)
+        |(?:tempest\.scenario\.test_network_basic_ops\.TestNetworkBasicOps\.test_update_router_admin_state.*)
+        # BUG: https://bugs.launchpad.net/networking-odl/+bug/1643033
+        # stateful security group: conntracking needs to be enabled
+        |(?:tempest\.scenario\.test_network_basic_ops\.TestNetworkBasicOps\.test_hotplug_nic.*)
+        |(?:tempest\.scenario\.test_security_groups_basic_ops\.TestSecurityGroupsBasicOps\.test_cross_tenant_traffic.*)
+        |(?:tempest\.scenario\.test_security_groups_basic_ops\.TestSecurityGroupsBasicOps\.test_port_security_disable_security_group.*)
+        # BUG: https://bugs.launchpad.net/networking-odl/+bug/1656129
+        # These tests seem broken regardless of networking-odl functionality
+        |(?:neutron_tempest_plugin\.api\.test_revisions\.TestRevisions.*subnet.*?)
+        # exluding some tests temporarily
+        # ^^^^ END: CURRENT LIST OF FAILING TESTS THAT NEED TO BE TRIAGED, HAVE BUGS FILED, AND
+        #           FIXED AS APPROPRIATE.
+        # //// END LIST OF EXCLUSIONS.
+        )
+        # run tempest.api/scenario/thirdparty tests (part of the default for 'full')
+        # and also neutron's tempest plugin
+        (tempest\.(api|scenario|thirdparty)|neutron_tempest_plugin).*$
+
+- job:
+    name: networking-odl-tempest-carbon
+    parent: networking-odl-tempest-base
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *carbon
+
+- job:
+    name: networking-odl-tempest-nitrogen
+    parent: networking-odl-tempest-base
+    branches: ^(?!stable/(newton|ocata)).*$
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *nitrogen
+
+- job:
+    name: networking-odl-tempest-oxygen
+    parent: networking-odl-tempest-base
+    branches: ^(?!stable/(newton|ocata|pike)).*$
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *oxygen
+
+- job:
+    name: networking-odl-devstack-base
+    parent: devstack
+    description: |
+        Base job for devstack-based tests
+    pre-run: playbooks/devstack/pre.yaml
+    required-projects:
+      - openstack/ceilometer
+      - openstack/networking-odl
+      - openstack/networking-l2gw
+      - openstack/networking-sfc
+      - openstack/networking-bgpvpn
+      - openstack/neutron-fwaas
+      - openstack/neutron-lbaas
+    roles:
+      - zuul: openstack/devstack
+    timeout: 9000
+    irrelevant-files: *irrelevant_files
+    vars:
+      <<: *devstack_vars
+      run_devstack: True
+
+- job:
+    name: networking-odl-devstack-base-tox
+    parent: networking-odl-devstack-base
+    pre-run: playbooks/devstack-tox/pre.yaml
+    run: playbooks/devstack-tox/run.yaml
+    post-run: playbooks/devstack-tox/post.yaml
+    description: |
+        Base job for devstack tests that use a tox environment
+
+- job:
+    name: networking-odl-functional-base
+    parent: networking-odl-devstack-base-tox
+    pre-run: playbooks/functional/pre.yaml
+    description: |
+        Base job for functional tests
+    timeout: 1800
+    roles:
+      - zuul: openstack/devstack
+    vars:
+      tox_envlist: functional
+      zuul_copy_output:
+        '{{ devstack_log_dir }}/functional-logs': 'logs'
+        '{{ devstack_log_dir }}/screen-karaf.log': 'logs'
+      extensions_to_txt:
+        log: True
+      devstack_localrc:
+        HOST_IP: 127.0.0.1
+        UNSTACK_KEEP_ODL: True
+      run_devstack: False
+
+- job:
+    name: networking-odl-functional-carbon
+    parent: networking-odl-functional-base
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *carbon
+
+- job:
+    name: networking-odl-functional-nitrogen
+    parent: networking-odl-functional-base
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *nitrogen
+
+- job:
+    name: networking-odl-functional-oxygen
+    parent: networking-odl-functional-base
+    voting: false
+    vars:
+      devstack_localrc:
+        ODL_RELEASE: *oxygen
+
+# >>> LEGACY JOBS TO REPLACE
+
+- job:
+    name: networking-odl-grenade
+    parent: legacy-dsvm-base
+    run: playbooks/legacy/grenade-dsvm-networking-odl/run.yaml
+    post-run: playbooks/legacy/grenade-dsvm-networking-odl/post.yaml
+    timeout: 9000
+    required-projects:
+      - openstack/grenade
+      - openstack/devstack-gate
+      - openstack/networking-odl
+
+- job:
+    name: networking-odl-tempest-carbon-multinode
+    parent: legacy-dsvm-base-multinode
+    run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-carbon-snapshot/run.yaml
+    post-run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-carbon-snapshot/post.yaml
+    timeout: 10800
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - openstack/tempest
+    nodeset: legacy-ubuntu-xenial-2-node
+
+- job:
+    name: networking-odl-tempest-nitrogen-multinode
+    parent: legacy-dsvm-base-multinode
+    run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-nitrogen-snapshot/run.yaml
+    post-run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-nitrogen-snapshot/post.yaml
+    timeout: 10800
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - openstack/tempest
+    nodeset: legacy-ubuntu-xenial-2-node
+
+- job:
+    name: networking-odl-tempest-oxygen-multinode
+    parent: legacy-dsvm-base-multinode
+    run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-oxygen-snapshot/run.yaml
+    post-run: playbooks/legacy/tempest-dsvm-networking-odl-multinode-oxygen-snapshot/post.yaml
+    timeout: 10800
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - openstack/tempest
+    nodeset: legacy-ubuntu-xenial-2-node
+
+- job:
+    name: networking-odl-rally-carbon
+    parent: legacy-dsvm-base
+    run: playbooks/legacy/rally-dsvm-networking-odl-carbon-snapshot/run.yaml
+    post-run: playbooks/legacy/rally-dsvm-networking-odl-carbon-snapshot/post.yaml
+    timeout: 7500
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - {"name": "openstack/rally", "override-checkout": "0.12.1"}
+
+- job:
+    name: networking-odl-rally-nitrogen
+    parent: legacy-dsvm-base
+    run: playbooks/legacy/rally-dsvm-networking-odl-nitrogen-snapshot/run.yaml
+    post-run: playbooks/legacy/rally-dsvm-networking-odl-nitrogen-snapshot/post.yaml
+    timeout: 7500
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - {"name": "openstack/rally", "override-checkout": "0.12.1"}
+
+- job:
+    name: networking-odl-rally-oxygen
+    parent: legacy-dsvm-base
+    run: playbooks/legacy/rally-dsvm-networking-odl-oxygen-snapshot/run.yaml
+    post-run: playbooks/legacy/rally-dsvm-networking-odl-oxygen-snapshot/post.yaml
+    timeout: 7500
+    required-projects:
+      - openstack/devstack-gate
+      - openstack/networking-odl
+      - openstack/rally
+
+# <<< LEGACY JOBS TO REPLACE
